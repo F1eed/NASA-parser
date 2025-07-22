@@ -3,13 +3,14 @@
 #include "lib/ArgParser/ArgParser.h"
 #include "lib/FileParser/FileParser.h"
 
-// вынести логику из GetArguments, тут убрать такую проверку, поставить в другом месте с проверкой на пустоту и с проверкой на открытие файла сразу
-
 int main(int argc, char *argv[]) {
     Options arguments = parseArguments(argc, argv);
     if (arguments.inputFile != ""){
         std::ifstream logsFile(arguments.inputFile);
-        std::ofstream outputFile(arguments.outputPath + ".log");
+        if (arguments.outputPath != "") {
+            std::ofstream outputFile(arguments.outputPath + ".log");
+        }
+        std::ofstream outputFile("output.log");
         checkOutputFile(outputFile);
         ProcessLogs(logsFile, outputFile, arguments);
     }

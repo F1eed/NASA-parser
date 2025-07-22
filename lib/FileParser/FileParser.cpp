@@ -1,35 +1,50 @@
-#include <cstdio>
-#include <ctime>
 #include <iostream>
-#include <iomanip>
-#include <string>
 #include <sstream>
 #include <vector>
-#include <map>
+#include <deque>
+#include <unordered_map>
+#include <queue>
 #include <fstream>
 #include <algorithm>
 
 #include "lib/ArgParser/ArgParser.h"
+#include "lib/Helpers/Helpers.h"
 
-struct LogData{
-    std::string ip = "";
-    std::string datetime = "";
-    std::string request = "";
-    std::string statusCode = "";
-    std::string bytesSend = "";
+const int MIN_SIZE_OF_NORMAL_LOG = 9;
+
+struct Log {
+    std::string remoteAddr;
+    long long localTime;
+    std::string request;
+    uint16_t status;
+    int bytesSend; 
 };
 
-std::string Merge(std::string& firstString, std::string& secondString){
-    std::string temp = firstString + " " + secondString;
-    return temp;
+void checkOutputFile(std::ofstream& outputFile) {
+    if (!outputFile.is_open()) {
+        std::cerr << "\033[31mERROR: failed to open output file\033[0m\n";
+        exit(1);
+    }
 }
 
+void print(std::ofstream& outputFile, std::string& logLine, bool needPrinted) {
+    if (needPrinted){
+        std::cout << logLine << "\n";
+    }
+    if (outputFile.is_open()){
+        outputFile << logLine + "\n";
+    }
+}
 
-std::vector<std::string> Split(const std::string& Logs, char sep) {
+std::string Merge(std::string& firstString, std::string& secondString) {
+    return firstString + " " + secondString;
+}
+
+std::vector<std::string> Split(const std::string& str, char sep) {
     std::vector<std::string> result;
     bool needToAdd = true;
 
-    for (auto c : Logs) {
+    for (auto c : str) {
         if (c == sep) {
             needToAdd = true;
         } else {
@@ -45,298 +60,91 @@ std::vector<std::string> Split(const std::string& Logs, char sep) {
     return result;
 }
 
-long long ToUnix(const std::string& datetime){
+long long ToUnix(const std::string& datetime) {
     std::istringstream ss(datetime);
     std::tm tm;
 
     ss >> std::get_time(&tm, "%d/%b/%Y:%H:%M:%S %z");
-    long long timestamp = std::mktime(&tm);
     
-    return timestamp;
+    return std::mktime(&tm);
 }
 
+Log parseLogTokens(std::vector<std::string>& tokens) {
+    Log splittedLog;
 
-void Parse(ParseOptions arg) {
-    std::string filename = "../../" + arg.inputFile;
-    std::ifstream LogsFile(filename);
-    std::string buffer;
+    splittedLog.remoteAddr = tokens[0];
+    tokens[3] = tokens[3].substr(1);
+    tokens[4] = tokens[4].substr(0, tokens[4].size()-1);
+
+    splittedLog.localTime = ToUnix(Merge(tokens[3], tokens[4]));
+
+    splittedLog.bytesSend = StringToInt(tokens.back());
+    splittedLog.status = StringToInt(tokens[tokens.size() - 2]);
+
+    for(int i = 5; i < tokens.size() - 3; ++i) {
+        splittedLog.request += tokens[i] + " ";
+    }
+    splittedLog.request += tokens[tokens.size() - 3];
+    
+    return splittedLog;
+}
+
+void ProcessLogs (std::ifstream& in, std::ofstream& out, Options& options) {
+    std::string logLine = "";
+    std::deque<std::pair<long long, std::string>> window;
+
+    std::unordered_map <std::string, int> requestWithServerErrorStatus;
+    long long maxWindowSize = 0;
+    std::string startWindow = "";
+    std::string endWindow = "";
     std::vector <std::string> serverErrorLogs;
-    if (arg.output_path != "") {
-        arg.output_path = "../../" + arg.output_path;
-    }
-    std::ofstream file(arg.output_path);
-    std::map <std::string, int> requestWithServerErrorStatus;
-    if (arg.toTimeValue == 0){
-        if (arg.windowTimeValue != 0) {
-            long long maxRequestSize = 0;
-            std::vector <long long> requests;
-            while (std::getline(LogsFile, buffer)) {
-                std::vector <std::string> splitLog = Split(buffer, ' ');
-                LogData splittedLog;
-                splittedLog.ip = splitLog[0];
-                splitLog[3] = splitLog[3].substr(1, splitLog[3].size());
-                splitLog[4] = splitLog[4].substr(0, splitLog[4].size()-1);
-                splitLog[5] = splitLog[5].substr(1, splitLog[5].size());
-                if (splitLog[7] == "HTTP/1.0\"") {
-                    splitLog[7] = splitLog[7].substr(0, splitLog[7].size()-1);
-                    splittedLog.request  = Merge(splitLog[5], splitLog[6]);
-                    splittedLog.request = Merge(splittedLog.request, splitLog[7]);
-                    splittedLog.statusCode = splitLog[8];
-                    splittedLog.bytesSend = splitLog[9];
-                }
-                else {
-                    splittedLog.request = Merge(splitLog[5],splitLog[6]);
-                    splittedLog.statusCode = splitLog[7];
-                    splittedLog.bytesSend = splitLog[8];
-                }
-                splittedLog.datetime = Merge(splitLog[3], splitLog[4]);
-                long long unixTime = ToUnix(splittedLog.datetime);
-                requests.push_back(unixTime);
-                if (requests[requests.size() -1] - requests[0] > arg.windowTimeValue){
-                    if (requests.size()-1 > maxRequestSize){
-                        maxRequestSize = requests.size()-1;
-                    }
-                    requests.erase(requests.begin());
-                }
-                if (unixTime >= arg.fromTimeValue){
-                    if (splittedLog.statusCode[0] == '5'){
-                        if (arg.isStatsValue){
-                            requestWithServerErrorStatus[splittedLog.request] ++;
-                            if (arg.isPrintValue){
-                                if (file.is_open()){
-                                    file << buffer + "\n";
-                                    std::cout << buffer << "\n";
-                                }
-                                else{
-                                    std::cout << buffer << "\n";
-                                }
-                            }
-                            else if (file.is_open()){
-                                file << buffer + "\n";
-                            }
-                        }
-                        else{
-                            if (arg.isPrintValue){
-                                if (file.is_open()){
-                                    file << buffer + "\n";
-                                    std::cout << buffer << "\n";
-                                }
-                                else{
-                                    std::cout << buffer << "\n";
-                                }
-                            }
-                            else if (file.is_open()){
-                                file << buffer + "\n";
-                            }
-                        }
-                    }
-                }
+
+    while (std::getline(in, logLine)) {
+        std::vector<std::string> tokens = Split(logLine, ' ');
+        if (tokens.size() < MIN_SIZE_OF_NORMAL_LOG) {
+            continue;
+        }
+        Log parsedLog = parseLogTokens(tokens);
+
+        if (!(options.fromTimeValue <= parsedLog.localTime && parsedLog.localTime <= options.toTimeValue)) continue;
+
+        if (options.windowTimeValue) {
+            window.push_back({parsedLog.localTime, logLine});
+            while (!window.empty() && window.back().first - window.front().first > options.windowTimeValue) {
+                window.pop_front();
             }
-            if (requests[requests.size() -1] - requests[0] <= arg.windowTimeValue){
-                if (requests.size() > maxRequestSize){
-                    maxRequestSize = requests.size();
-                }
-                requests.erase(requests.begin());
-            }
-            std::cout << "Max Requests in " << arg.windowTimeValue << " seconds is " << maxRequestSize << "\n";
-        }   
-        else{
-            while (std::getline(LogsFile, buffer)) {
-                std::vector <std::string> splitLog = Split(buffer, ' ');
-                LogData splittedLog;
-                splittedLog.ip = splitLog[0];
-                splitLog[3] = splitLog[3].substr(1, splitLog[3].size());
-                splitLog[4] = splitLog[4].substr(0, splitLog[4].size()-1);
-                splitLog[5] = splitLog[5].substr(1, splitLog[5].size());
-                if (splitLog[7] == "HTTP/1.0\"") {
-                    splitLog[7] = splitLog[7].substr(0, splitLog[7].size()-1);
-                    splittedLog.request  = Merge(splitLog[5], splitLog[6]);
-                    splittedLog.request = Merge(splittedLog.request, splitLog[7]);
-                    splittedLog.statusCode = splitLog[8];
-                    splittedLog.bytesSend = splitLog[9];
-                }
-                else {
-                    splittedLog.request = Merge(splitLog[5],splitLog[6]);
-                    splittedLog.statusCode = splitLog[7];
-                    splittedLog.bytesSend = splitLog[8];
-                }
-                splittedLog.datetime = Merge(splitLog[3], splitLog[4]);
-                long long unixTime = ToUnix(splittedLog.datetime);
-                if (unixTime >= arg.fromTimeValue){
-                    if (splittedLog.statusCode[0] == '5'){
-                        if (arg.isStatsValue){
-                            requestWithServerErrorStatus[splittedLog.request] ++;
-                            if (arg.isPrintValue){
-                                if (file.is_open()){
-                                    file << buffer + "\n";
-                                    std::cout << buffer << "\n";
-                                }
-                                else{
-                                    std::cout << buffer << "\n";
-                                }
-                            }
-                            else if (file.is_open()){
-                                file << buffer + "\n";
-                            }
-                        }
-                        else{
-                            if (arg.isPrintValue){
-                                if (file.is_open()){
-                                    file << buffer + "\n";
-                                    std::cout << buffer << "\n";
-                                }
-                                else{
-                                    std::cout << buffer << "\n";
-                                }
-                            }
-                            else if (file.is_open()){
-                                file << buffer + "\n";
-                            }
-                        }
-                    }
-                }
+
+            if (window.size() > maxWindowSize) {
+                maxWindowSize = window.size();
+                startWindow = window.front().second;
+                endWindow = window.back().second;
             }
         }
-    }
-    else{
-        if (arg.windowTimeValue != 0) {
-            long long maxRequestSize = 0;
-            std::vector <long long> requests;
-            while (std::getline(LogsFile, buffer)) {
-                std::vector <std::string> splitLog = Split(buffer, ' ');
-                LogData splittedLog;
-                splittedLog.ip = splitLog[0];
-                splitLog[3] = splitLog[3].substr(1, splitLog[3].size());
-                splitLog[4] = splitLog[4].substr(0, splitLog[4].size()-1);
-                splitLog[5] = splitLog[5].substr(1, splitLog[5].size());
-                if (splitLog[7] == "HTTP/1.0\"") {
-                    splitLog[7] = splitLog[7].substr(0, splitLog[7].size()-1);
-                    splittedLog.request  = Merge(splitLog[5], splitLog[6]);
-                    splittedLog.request = Merge(splittedLog.request, splitLog[7]);
-                    splittedLog.statusCode = splitLog[8];
-                    splittedLog.bytesSend = splitLog[9];
-                }
-                else {
-                    splittedLog.request = Merge(splitLog[5],splitLog[6]);
-                    splittedLog.statusCode = splitLog[7];
-                    splittedLog.bytesSend = splitLog[8];
-                }
-                splittedLog.datetime = Merge(splitLog[3], splitLog[4]);
-                long long unixTime = ToUnix(splittedLog.datetime);
-                if (unixTime >= arg.fromTimeValue && unixTime <= arg.toTimeValue){
-                    requests.push_back(unixTime);
-                    if (requests[requests.size() -1] - requests[0] > arg.windowTimeValue){
-                        if (requests.size()-1 > maxRequestSize){
-                            maxRequestSize = requests.size()-1;
-                        }
-                        requests.erase(requests.begin());
-                    }
-                    if (splittedLog.statusCode[0] == '5'){
-                        if (arg.isStatsValue){
-                            requestWithServerErrorStatus[splittedLog.request] ++;
-                            if (arg.isPrintValue){
-                                if (file.is_open()){
-                                    file << buffer + "\n";
-                                    std::cout << buffer << "\n";
-                                }
-                                else{
-                                    std::cout << buffer << "\n";
-                                }
-                            }
-                            else if (file.is_open()){
-                                file << buffer + "\n";
-                            }
-                        }
-                        else{
-                            if (arg.isPrintValue){
-                                if (file.is_open()){
-                                    file << buffer + "\n";
-                                    std::cout << buffer << "\n";
-                                }
-                                else{
-                                    std::cout << buffer << "\n";
-                                }
-                            }
-                            else if (file.is_open()){
-                                file << buffer + "\n";
-                            }
-                        }
-                    }
-                }
+
+        if (parsedLog.status >= 500) {
+            serverErrorLogs.push_back(logLine);
+            if (options.isStatsValue) {
+                requestWithServerErrorStatus[parsedLog.request]++;
             }
-            if (requests[requests.size() -1] - requests[0] <= arg.windowTimeValue){
-                if (requests.size() > maxRequestSize){
-                    maxRequestSize = requests.size();
-                }
-                requests.erase(requests.begin());
-            }
-            std::cout << "Max Requests in " << arg.windowTimeValue << " seconds is " << maxRequestSize << "\n";
-        }   
-        else{
-            while (std::getline(LogsFile, buffer)) {
-                std::vector <std::string> splitLog = Split(buffer, ' ');
-                LogData splittedLog;
-                splittedLog.ip = splitLog[0];
-                splitLog[3] = splitLog[3].substr(1, splitLog[3].size());
-                splitLog[4] = splitLog[4].substr(0, splitLog[4].size()-1);
-                splitLog[5] = splitLog[5].substr(1, splitLog[5].size());
-                if (splitLog[7] == "HTTP/1.0\"") {
-                    splitLog[7] = splitLog[7].substr(0, splitLog[7].size()-1);
-                    splittedLog.request  = Merge(splitLog[5], splitLog[6]);
-                    splittedLog.request = Merge(splittedLog.request, splitLog[7]);
-                    splittedLog.statusCode = splitLog[8];
-                    splittedLog.bytesSend = splitLog[9];
-                }
-                else {
-                    splittedLog.request = Merge(splitLog[5],splitLog[6]);
-                    splittedLog.statusCode = splitLog[7];
-                    splittedLog.bytesSend = splitLog[8];
-                }
-                splittedLog.datetime = Merge(splitLog[3], splitLog[4]);
-                long long unixTime = ToUnix(splittedLog.datetime);
-                if (unixTime >= arg.fromTimeValue && unixTime <= arg.toTimeValue){
-                    if (splittedLog.statusCode[0] == '5'){
-                        if (arg.isStatsValue){
-                            requestWithServerErrorStatus[splittedLog.request] ++;
-                            if (arg.isPrintValue){
-                                if (file.is_open()){
-                                    file << buffer + "\n";
-                                    std::cout << buffer << "\n";
-                                }
-                                else{
-                                    std::cout << buffer << "\n";
-                                }
-                            }
-                            else if (file.is_open()){
-                                file << buffer + "\n";
-                            }
-                        }
-                        else{
-                            if (arg.isPrintValue){
-                                if (file.is_open()){
-                                    file << buffer + "\n";
-                                    std::cout << buffer << "\n";
-                                }
-                                else{
-                                    std::cout << buffer << "\n";
-                                }
-                            }
-                            else if (file.is_open()){
-                                file << buffer + "\n";
-                            }
-                        }
-                    }
-                }
-            }
+            print(out, logLine, options.isPrintValue);
         }
-    }
-    std::vector <std::pair<std::string, int>> vectorWithErrorRequests(requestWithServerErrorStatus.begin(), requestWithServerErrorStatus.end());
-    std::sort(vectorWithErrorRequests.begin(), vectorWithErrorRequests.end(), [](std::pair<std::string, int> a, std::pair<std::string, int> b){return a.second > b.second;});
-    if(arg.statsValue > vectorWithErrorRequests.size()) {
-        arg.statsValue = vectorWithErrorRequests.size();
-    }
-    for(int i = 0; i < arg.statsValue; ++i) {
-        std::cout << vectorWithErrorRequests[i].second << " " << vectorWithErrorRequests[i].first << "\n";
     }
 
+
+    if (options.windowTimeValue) {
+        std::cout << "Max Requests in " << options.windowTimeValue << " seconds is " << maxWindowSize << "\nStarting at: " << startWindow << "\nEnding at: " << endWindow << "\n";
+    }
+
+    if (options.isStatsValue) {
+        auto cmp = [](const std::pair<std::string, int>& a, const std::pair<std::string, int>& b) {
+            return a.second > b.second;
+        };
+        
+        std::vector<std::pair<std::string, int>> v(requestWithServerErrorStatus.begin(), requestWithServerErrorStatus.end());
+        std::sort(v.begin(), v.end(), cmp);
+
+        for(int i = 0; i < std::min(options.statsValue, static_cast<int>(v.size())); ++i) {
+            std::cout << v[i].second << ": " << v[i].first << "\n";
+        }
+    }
 }

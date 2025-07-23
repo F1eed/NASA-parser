@@ -7,10 +7,12 @@ int main(int argc, char *argv[]) {
     Options arguments = parseArguments(argc, argv);
     if (arguments.inputFile != ""){
         std::ifstream logsFile(arguments.inputFile);
+        std::ofstream outputFile;
         if (arguments.outputPath != "") {
-            std::ofstream outputFile(arguments.outputPath + ".log");
+            outputFile.open(arguments.outputPath + ".log");
+        } else {
+            outputFile.open("output.log");
         }
-        std::ofstream outputFile("output.log");
         checkOutputFile(outputFile);
         ProcessLogs(logsFile, outputFile, arguments);
     }
